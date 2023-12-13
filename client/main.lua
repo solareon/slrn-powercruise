@@ -1,10 +1,47 @@
 local config = require 'config.shared'
 
-local autopilot = nil
+local autopilot, slowingDown = nil, nil
 local MenuItemId1 = nil
 local MenuItemId2 = nil
+local waypointBlip
+
+local function autoPilotThread()
+	CreateThread(function()
+		while autopilot do
+			SetDriverAbility(cache.ped, 1)
+			SetDriverAggressiveness(cache.ped, 0.5)
+			local loc2 = #(GetEntityCoords(cache.ped) - GetBlipInfoIdCoord(waypointBlip))
+			local turningOrBraking = IsControlPressed(2, 76) or IsControlPressed(2, 63) or IsControlPressed(2, 64)
+			print(loc2)			
+			if loc2 < 250.0 and not slowingDown then
+				slowingDown = true
+				ClearPedTasks(cache.ped)
+				ClearVehicleTasks(cache.vehicle)
+				exports.qbx_core:Notify('Nearing destination reducing speed.')
+				local coord = GetBlipInfoIdCoord(waypointBlip)
+				TaskVehicleDriveToCoord(cache.ped, cache.vehicle, coord.x, coord.y, coord.z - 1, 30.0, 0, GetEntityModel(cache.vehicle), 319, 1.0, 1)
+			end
+			if loc2 < 5.0 or not DoesBlipExist(waypointBlip) or turningOrBraking then
+				slowingDown = nil
+				autopilot = nil
+				ClearPedTasks(cache.ped)
+				ClearVehicleTasks(cache.vehicle)
+				local message = turningOrBraking and 'Autopilot disengaged' or 'Destination reached!'
+				exports.qbx_core:Notify(message, 'success')
+				BringVehicleToHalt(cache.vehicle, 3.0, 1.0)
+				Wait(1500)
+				StopBringVehicleToHalt(cache.vehicle)
+			end
+			Wait(10)
+		end
+    end)
+end
 
 local function autoPilot()
+	if exports.ox_inventory:Search('count', 'autopilot') == 0 then
+		exports.qbx_core:Notify('Who do you think is going to drive?', 'error')
+		return
+	end
 	if autopilot then
 		exports.qbx_core:Notify('Already In Autopilot mode', 'error')
 		return
@@ -14,26 +51,23 @@ local function autoPilot()
 		return
 	end
 	autopilot = true
-	if not GetFirstBlipInfoId(8) ~= 0 then
-		exports.qbx_core:Notify('Set a Waypoint idiot.', 'error')
+	waypointBlip = GetFirstBlipInfoId(8)
+	if not DoesBlipExist(waypointBlip) then
+		exports.qbx_core:Notify('Set a waypoint idiot.', 'error')
 		return
 	end
-	Wait(2000)
-	local waypointBlip = GetFirstBlipInfoId(8)
+	exports.qbx_core:Notify('Autopilot engaged', 'success')
+	Wait(1250)
 	local coord = GetBlipInfoIdCoord(waypointBlip)
-	TaskVehicleDriveToCoordLongrange(cache.ped, cache.vehicle, coord.x, coord.y, coord.z - 1, 100.0, 447, 20.0)
-	local loc2 = #(GetEntityCoords(cache.ped) - coord)
-	print(loc2)
-	if loc2 < 5.0 then
-		autopilot = nil
-		ClearPedTasks(cache.ped)
-		ClearVehicleTasks(cache.vehicle)
-	end
+	SetVehicleHandlingHashForAi(cache.vehicle, `SPORTS_CAR`)
+	TaskVehicleDriveToCoordLongrange(cache.ped, cache.vehicle, coord.x, coord.y, coord.z - 1, 50.0, 525119, 20.0)
+	autoPilotThread()
 end
 
 local function stopAutoPilot()
+	exports.qbx_core:Notify('Autopilot disengaged', 'success')
 	autopilot = nil
-	if cache.vehicle and cache.seat ~= -1 then
+	if cache.vehicle and cache.seat == -1 then
 		ClearPedTasks(cache.ped)
 		ClearVehicleTasks(cache.vehicle)
 	end
@@ -41,8 +75,8 @@ end
 
 RegisterNetEvent('slrn-powercruise:client:startAutopilot', function()
 	if autopilot then
-		exports.qbx_core:Notify('Already In Autopilot mode', 'error')
-	elseif exports.ox_inventory:Search('count', config.autopilotItem) then
+		exports.qbx_core:Notify('Already in Autopilot mode', 'error')
+	else
 		autoPilot()
 	end
 end)
@@ -55,7 +89,7 @@ local function addStartRadialOption()
 	if not MenuItemId1 then
 		MenuItemId1 = exports['qb-radialmenu']:AddOption({
 			id = 'start_autopilot',
-			title = 'Start Autopilot',
+			title = 'AutoPilot',
 			icon = 'square-parking',
 			type = 'command',
 			event = config.autopilotCommand,
@@ -65,7 +99,7 @@ local function addStartRadialOption()
 	if not MenuItemId2 then
 		MenuItemId2 = exports['qb-radialmenu']:AddOption({
 			id = 'stop_autopilot',
-			title = 'Stop Autopilot',
+			title = 'AP Stop',
 			icon = 'square-parking',
 			type = 'command',
 			event = config.autopilotStopCommand,
@@ -86,9 +120,9 @@ local function removeRadialOptions()
 end
 
 lib.onCache('seat', function(value)
-	if exports.ox_inventory:Search('count', 'autopilot') and value == -1 then
+	if exports.ox_inventory:Search('count', 'autopilot') > 0 and value == -1 then
 		addStartRadialOption()
-	else
+	elseif not autopilot then
 		removeRadialOptions()
 	end
 end)
